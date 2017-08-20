@@ -4,127 +4,15 @@
 # By RoadrunnerWMC
 # License: GNU GPL v3
 
-import collections
 import os, os.path
 import struct
 
-import fnttool
+import lz10
+import narc
 
-
-# Nintendo DS standard file header:
-NDS_STD_FILE_HEADER = struct.Struct('<4sIIHH')
-# - Magic
-# - Unk (0x0100FEFF or 0x0100FFFE; maybe a BOM or something?)
-# - File size (including this header)
-# - Size of this header (16)
-# - Number of blocks
 
 ROOT_ST = '../RETAIL/st/root'
 ROOT_PH = '../RETAIL/ph/root'
-
-
-def loadNarc(data):
-    """
-    Load a NARC from data
-    """
-    # Read the standard header
-    magic, unk04, filesize, headersize, numblocks = \
-        NDS_STD_FILE_HEADER.unpack_from(data, 0)
-
-    if magic != b'NARC':
-        raise ValueError("Wrong magic (should be b'NARC', instead found "
-                         f'{magic})')
-
-    # Read the file allocation block
-    fatbMagic, fatbSize, fileCount = struct.unpack_from('<4sII', data, 0x10)
-    assert fatbMagic == b'FATB'[::-1]
-
-    fileSlices = []
-    for i in range(fileCount):
-        startOffset, endOffset = struct.unpack_from('<II', data, 0x1C + 8 * i)
-        fileSlices.append((startOffset, endOffset - startOffset))
-
-    # Read the file name block
-    fntbOffset = 0x10 + fatbSize
-    fntbMagic, fntbSize = struct.unpack_from('<4sI', data, fntbOffset)
-    assert fntbMagic == b'FNTB'[::-1]
-
-    # Get the data from the file data block before continuing
-    fimgOffset = fntbOffset + fntbSize
-    fimgMagic, gmifSize = struct.unpack_from('<4sI', data, fimgOffset)
-    assert fimgMagic == b'FIMG'[::-1]
-    rawDataOffset = fimgOffset + 8
-
-    # Parse the filenames and files
-
-    names = fnttool.fnt2Dict(data[fntbOffset + 8 : fntbOffset + fntbSize])
-
-    def makeFolder(info):
-        root = {}
-        root['folders'] = collections.OrderedDict()
-        root['files'] = collections.OrderedDict()
-
-        for fname, fdict in info.get('folders', {}).items():
-            root['folders'][fname] = makeFolder(fdict)
-
-        id = info['first_id']
-        for file in info.get('files', []):
-            start, length = fileSlices[id]
-            start += rawDataOffset
-            fileData = data[start : start+length]
-            root['files'][file] = fileData
-            id += 1
-
-        return root
-
-    return makeFolder(names)
-
-
-def decompress_LZ10(data):
-    assert data[0] == 0x10
-
-    # This code is ported from NSMBe, which was converted from Elitemap.
-    dataLen = struct.unpack_from('<I', data)[0] >> 8
-
-    out = bytearray(dataLen)
-    inPos, outPos = 4, 0
-
-    while dataLen > 0:
-        d = data[inPos]; inPos += 1
-
-        if d:
-            for i in range(8):
-                if d & 0x80:
-                    thing, = struct.unpack_from('>H', data, inPos); inPos += 2
-
-                    length = (thing >> 12) + 3
-                    offset = thing & 0xFFF
-                    windowOffset = outPos - offset - 1
-
-                    for j in range(length):
-                        out[outPos] = out[windowOffset]
-                        outPos += 1; windowOffset += 1; dataLen -= 1
-
-                        if dataLen == 0:
-                            return bytes(out)
-
-                else:
-                    out[outPos] = data[inPos]
-                    outPos += 1; inPos += 1; dataLen -= 1
-
-                    if dataLen == 0:
-                        return bytes(out)
-
-                d <<= 1
-        else:
-            for i in range(8):
-                out[outPos] = data[inPos]
-                outPos += 1; inPos += 1; dataLen -= 1
-
-                if dataLen == 0:
-                    return bytes(out)
-
-    return bytes(out)
 
 
 def parseCourselist(courseInit, courseList):
@@ -169,6 +57,8 @@ def parseZmb(zmb):
     """
     Parse a ZMB (Zelda Map Binary) file.
     """
+    stuff = [] # FIXME: TESTING ONLY
+
     magic, fileLen, version, unk10, unk14, unk18, unk1C = \
         struct.unpack_from('<8s6I', zmb)
     assert magic == b'MAPB'[::-1] + b'ZMB1'[::-1]
@@ -281,34 +171,85 @@ def parseZmb(zmb):
 
     offset += plyrLen
 
-    # MPOB section
+    # MPOB section ("map objects")
     mpobLen, mpobCount, mpobUnk0A = sectionHeader(b'MPOB')
     assert mpobUnk0A == -1
     assert mpobLen == 12 + 0x1C * mpobCount
 
     for i in range(mpobCount):
-        objType, unk04, unk08, unk0C, unk10, unk14, unk18 = \
-            struct.unpack_from('<4s6I', zmb, offset + 12 + 0x1C * i)
+        objType, x, y, unk06, unk08, unk0C, unk10, unk14, unk18 = \
+            struct.unpack_from('<4sBBH5I', zmb, offset + 12 + 0x1C * i)
         if version == 9:
             objType, = struct.unpack_from('<I', objType)
             objType = f'({objType})'
         else:
             objType = objType[::-1].decode('ascii')
 
+        stuff.append((False, objType, x << 4, y << 4))
+
     offset += mpobLen
 
-    # NPCA section
+    # NPCA section (actors)
     npcaLen, npcaCount, npcaUnk0A = sectionHeader(b'NPCA')
     assert npcaUnk0A == -1
     assert npcaLen == 12 + 0x20 * npcaCount
 
     for i in range(npcaCount):
-        npcType, xPos, yPos, zPos, rot, unk0C, unk10, unk14, unk18, unk1C = \
+        actorID, x, y, zPos, rot, unk0C, unk10, unk14, unk18, unk1C = \
             struct.unpack_from('<4s4h5I', zmb, offset + 12 + 0x20 * i)
-        npcType = npcType[::-1].decode('ascii')
+        actorID = actorID[::-1].decode('ascii')
 
         # unk18 is related to dialogue/script
-        # unk1C can make NPCs disappear
+        # unk1C can make actors disappear
+
+        stuff.append((True, actorID, x, y))
+
+
+    IMGW, IMGH = 1024, 1024
+    IMGW += 80; IMGH += 80
+    import PIL.Image, PIL.ImageDraw, PIL.ImageFont
+    image = PIL.Image.new('RGBA', (IMGW, IMGH), (0,0,0,0))
+    draw = PIL.ImageDraw.Draw(image)
+    font = PIL.ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 10)
+
+    wantPrint = False
+
+    if stuff:
+        minX = minY = 0xFFFF
+        maxX = maxY = 0
+        for isActor, name, xPos, yPos in stuff:
+            if xPos < minX: minX = xPos
+            if yPos < minY: minY = yPos
+            if xPos > maxX: maxX = xPos
+            if yPos > maxY: maxY = yPos
+        maxX += 1; maxY += 1
+
+        canvasX = minX
+        canvasY = minY
+        canvasW = canvasH = max(maxX - canvasX, maxY - canvasY)
+
+        def canvasPos(x, y):
+            return (1024 * (x - canvasX) / canvasW,
+                    1024 * (y - canvasY) / canvasH)
+
+        draw.text(canvasPos(minX, minY), f'({minX}, {minY})', (0,255,0,255), font=font)
+        draw.text(canvasPos(maxX, minY), f'({maxX}, {minY})', (0,255,0,255), font=font)
+        draw.text(canvasPos(minX, maxY), f'({minX}, {maxY})', (0,255,0,255), font=font)
+        draw.text(canvasPos(maxX, maxY), f'({maxX}, {maxY})', (0,255,0,255), font=font)
+
+        for isActor, name, xPos, yPos in stuff:
+            assert (xPos >> 4) <= 256
+            assert (yPos >> 4) <= 256
+            color = (0,0,0,255) if isActor else (255,0,0,255)
+
+            x, y = canvasPos(xPos, yPos)
+
+            draw.text((x, y), name, color, font=font)
+            # if (xPos >> 4) >= 245 or (yPos >> 4) >= 245:
+            #     wantPrint = True
+
+
+    return image, wantPrint
 
 
 def main():
@@ -342,7 +283,7 @@ def main():
             # Get stuff from course.bin
             with open(os.path.join(courseFolder, 'course.bin'), 'rb') as f:
                 courseBin = f.read()
-            courseNarc = loadNarc(decompress_LZ10(courseBin))
+            courseNarc = narc.load(lz10.decompress(courseBin))
 
             # The zab is always the only file in the "arrange" folder
             _, zab = getOnlyItemFrom(courseNarc['folders']['arrange']['files'])
@@ -362,13 +303,13 @@ def main():
 
             # Load map**.bin's
 
-            for i in range(100):
-                mapBinFn = os.path.join(courseFolder, 'map%02d.bin' % i)
+            for mapNumber in range(100):
+                mapBinFn = os.path.join(courseFolder, 'map%02d.bin' % mapNumber)
                 if not os.path.isfile(mapBinFn): continue
 
                 with open(mapBinFn, 'rb') as f:
                     mapBin = f.read()
-                mapNarc = loadNarc(decompress_LZ10(mapBin))
+                mapNarc = narc.load(lz10.decompress(mapBin))
 
                 # SUBFOLDERS OF MAP.BIN
                 # mcb: PH: one optional {courseFilename}_{mapNumber}.mcb file
@@ -415,17 +356,17 @@ def main():
 
                 # Load the ZOBs
                 moTypes = []
-                for i in range(10):
+                for zobNum in range(10):
                     for zobFile in mapNarc['folders']['zob']['files']:
-                        if zobFile.startswith('motype_') and zobFile.endswith(f'_{i}.zob'):
+                        if zobFile.startswith('motype_') and zobFile.endswith(f'_{zobNum}.zob'):
                             break
                     else:
                         break
                     moTypes.append(mapNarc['folders']['zob']['files'][zobFile])
                 npcTypes = []
-                for i in range(10):
+                for zobNum in range(10):
                     for zobFile in mapNarc['folders']['zob']['files']:
-                        if zobFile.startswith('npctype_') and zobFile.endswith(f'_{i}.zob'):
+                        if zobFile.startswith('npctype_') and zobFile.endswith(f'_{zobNum}.zob'):
                             break
                     else:
                         break
@@ -433,7 +374,9 @@ def main():
                 assert len(moTypes) in (2, 10)
                 assert len(npcTypes) in (2, 10)
 
-                parseZmb(zmbFile)
+                courseImg, printName = parseZmb(zmbFile)
+                courseImg.save(f'courses/{courseFilename}_%02d.png' % mapNumber)
+                if printName: print(courseFilename)
 
 
 if __name__ == '__main__':
