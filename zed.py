@@ -287,8 +287,8 @@ def parseZmb(zmb):
     assert mpobLen == 12 + 0x1C * mpobCount
 
     for i in range(mpobCount):
-        objType, xPos, yPos, zPos, rot, unk0C, unk10, unk14, unk18 = \
-            struct.unpack_from('<4s4h4I', zmb, offset + 12 + 0x1C * i)
+        objType, unk04, unk08, unk0C, unk10, unk14, unk18 = \
+            struct.unpack_from('<4s6I', zmb, offset + 12 + 0x1C * i)
         if version == 9:
             objType, = struct.unpack_from('<I', objType)
             objType = f'({objType})'
