@@ -165,6 +165,152 @@ def getOnlyItemFrom(dict):
     return key, dict[key]
 
 
+def parseZmb(zmb):
+    """
+    Parse a ZMB (Zelda Map Binary) file.
+    """
+    magic, fileLen, version, unk10, unk14, unk18, unk1C = \
+        struct.unpack_from('<8s6I', zmb)
+    assert magic == b'MAPB'[::-1] + b'ZMB1'[::-1]
+    assert fileLen == len(zmb)
+    assert unk10 == unk14 == unk18 == unk1C == 0x01020304
+
+    # "version" is 9 in Phantom Hourglass and 11 in Spirit Tracks.
+    # It's probably actually "sectionCount", but this way, we can also
+    # use it to account for other differences between the games.
+
+    offset = 0x20
+
+    def sectionHeader(expectedMagic):
+        """
+        Helper function to read a standard section header and verify
+        that the magic is as expected.
+        """
+        magic, len, count, unk0A = struct.unpack_from('<4sIHh', zmb, offset)
+        assert magic == expectedMagic[::-1] # (reverse it because little-endian)
+        return len, count, unk0A
+
+
+    # LDLB section (version 11-only)
+    if version >= 11:
+        ldlbLen, ldlbCount, ldlbUnk0A = sectionHeader(b'LDLB')
+        assert ldlbUnk0A == -1
+        assert ldlbLen == 12 + 0x08 * ldlbCount
+
+        offset += ldlbLen
+
+    # ROMB section
+    rombLen, rombCount, rombUnk0A = sectionHeader(b'ROMB')
+    assert rombUnk0A in (0x00, 0x30)
+    assert rombLen == 12 + rombCount * 0xC0 # But it's more complicated than a simple table.
+
+    offset += rombLen
+
+    # ROOM section
+    roomLen, roomCount, roomUnk0A = sectionHeader(b'ROOM')
+    assert roomLen == 0x20
+    assert roomCount == 1
+    assert roomUnk0A == 0x0304
+
+    offset += roomLen
+
+    # ARAB section
+    arabLen, arabCount, arabUnk0A = sectionHeader(b'ARAB')
+    assert arabUnk0A == -1
+    assert arabLen == 12 + arabCount * (0x0C if version == 9 else 0x10)
+
+    for i in range(arabCount):
+        # Struct length is different depending on version.
+        if version == 9:
+            unk00, unk04, unk08 = \
+                struct.unpack_from('<3I', zmb, offset + 12 + 0x0C * i)
+        else:
+            unk00, unk04, unk08, unk0C = \
+                struct.unpack_from('<4I', zmb, offset + 12 + 0x10 * i)
+
+    offset += arabLen
+
+    # RALB section
+    ralbLen, ralbCount, ralbUnk0A = sectionHeader(b'RALB')
+    assert ralbUnk0A == -1
+
+    # Sadly, ralbCount seems to be a lie. Or something.
+
+    offset += ralbLen
+
+    # WARP section
+    warpLen, warpCount, warpUnk0A = sectionHeader(b'WARP')
+    assert warpUnk0A == -1
+    assert warpLen == 12 + 0x18 * warpCount
+
+    for i in range(warpCount):
+        unk00, destination, unk14 = \
+            struct.unpack_from('<I16sI', zmb, offset + 12 + 0x18 * i)
+        destination = destination.rstrip(b'\0').decode('ascii')
+        # unk14 seems to be multiple values.
+
+    offset += warpLen
+
+    # CAME section
+    cameLen, cameCount, cameUnk0A = sectionHeader(b'CAME')
+    assert cameUnk0A == -1
+    assert cameLen == 12 + 0x1C * cameCount
+
+    for i in range(cameCount):
+        unk00, unk04, unk08, unk0C, unk10, unk14, unk18 = \
+            struct.unpack_from('<7I', zmb, offset + 12 + 0x1C * i)
+
+    offset += cameLen
+
+    # CMPT section (version 11-only)
+    if version >= 11:
+        cmptLen, cmptCount, cmptUnk0A = sectionHeader(b'CMPT')
+        assert cmptUnk0A == -1
+        assert cmptLen == 12 + 0x10 * cmptCount
+
+        for i in range(cmptCount):
+            unk00, unk04, unk08, unk0C = \
+                struct.unpack_from('<4I', zmb, offset + 12 + 0x10 * i)
+
+        offset += cmptLen
+
+    # PLYR section
+    plyrLen, plyrCount, plyrUnk0A = sectionHeader(b'PLYR')
+    assert plyrUnk0A == 0x0304
+    assert plyrLen == 12 + plyrCount * (0x10 if version == 9 else 0x14)
+
+    offset += plyrLen
+
+    # MPOB section
+    mpobLen, mpobCount, mpobUnk0A = sectionHeader(b'MPOB')
+    assert mpobUnk0A == -1
+    assert mpobLen == 12 + 0x1C * mpobCount
+
+    for i in range(mpobCount):
+        objType, xPos, yPos, zPos, rot, unk0C, unk10, unk14, unk18 = \
+            struct.unpack_from('<4s4h4I', zmb, offset + 12 + 0x1C * i)
+        if version == 9:
+            objType, = struct.unpack_from('<I', objType)
+            objType = f'({objType})'
+        else:
+            objType = objType[::-1].decode('ascii')
+
+    offset += mpobLen
+
+    # NPCA section
+    npcaLen, npcaCount, npcaUnk0A = sectionHeader(b'NPCA')
+    assert npcaUnk0A == -1
+    assert npcaLen == 12 + 0x20 * npcaCount
+
+    for i in range(npcaCount):
+        npcType, xPos, yPos, zPos, rot, unk0C, unk10, unk14, unk18, unk1C = \
+            struct.unpack_from('<4s4h5I', zmb, offset + 12 + 0x20 * i)
+        npcType = npcType[::-1].decode('ascii')
+
+        # unk18 is related to dialogue/script
+        # unk1C can make NPCs disappear
+
+
 def main():
     gameFolders = []
     gameFolders.append(ROOT_PH)
@@ -219,7 +365,6 @@ def main():
             for i in range(100):
                 mapBinFn = os.path.join(courseFolder, 'map%02d.bin' % i)
                 if not os.path.isfile(mapBinFn): continue
-                #print(mapBinFn)
 
                 with open(mapBinFn, 'rb') as f:
                     mapBin = f.read()
@@ -287,6 +432,8 @@ def main():
                     npcTypes.append(mapNarc['folders']['zob']['files'][zobFile])
                 assert len(moTypes) in (2, 10)
                 assert len(npcTypes) in (2, 10)
+
+                parseZmb(zmbFile)
 
 
 if __name__ == '__main__':
