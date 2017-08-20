@@ -79,6 +79,7 @@ def loadNarc(data):
 
     return makeFolder(names)
 
+
 def decompress_LZ10(data):
     assert data[0] == 0x10
 
@@ -127,22 +128,28 @@ def decompress_LZ10(data):
 
 
 def parseCourselist(courseInit, courseList):
-    assert courseInit.startswith(b'ZCIB')
+    initExists = courseInit is not None
+
+    if initExists:
+        assert courseInit.startswith(b'ZCIB')
     assert courseList.startswith(b'ZCLB')
 
     finalList = []
 
-    zcibMagic, initUnk04, entriesCount1, entriesCount2 = struct.unpack_from('<4s3I', courseInit)
-    zclbMagic, listUnk04, entriesCount3, entriesCount4 = struct.unpack_from('<4s3I', courseList)
-
-    # Why are there four entries counts?
-    assert entriesCount1 == entriesCount2 == entriesCount3 == entriesCount4
+    if initExists:
+        zcibMagic, initUnk04, entriesCountInit1, entriesCountInit2 = struct.unpack_from('<4s3I', courseInit)
+    zclbMagic, listUnk04, entriesCount1, entriesCount2 = struct.unpack_from('<4s3I', courseList)
 
     initOffset = listOffset = 0x10
     for i in range(entriesCount1):
-        initEntryLength = struct.unpack_from('<I', courseInit, initOffset)[0]
+        if initExists:
+            initEntryLength = struct.unpack_from('<I', courseInit, initOffset)[0]
+            entryName = courseInit[initOffset + 4 : initOffset + 0x14].rstrip(b'\0').decode('shift-jis')
+        else:
+            initEntryLength = 0
+            entryName = ''
+
         listEntryLength = struct.unpack_from('<I', courseList, listOffset)[0]
-        entryName = courseInit[initOffset + 4 : initOffset + 0x14].rstrip(b'\0').decode('shift-jis')
         entryFile = courseList[listOffset + 4 : listOffset + 0x14].rstrip(b'\0').decode('shift-jis')
 
         finalList.append((entryName, entryFile))
@@ -152,17 +159,58 @@ def parseCourselist(courseInit, courseList):
 
     return finalList
 
+
 def main():
-    with open(os.path.join(ROOT_ST, 'Course/courseinit.cib'), 'rb') as f:
-        courseinit = f.read()
-    with open(os.path.join(ROOT_ST, 'Course/courselist.clb'), 'rb') as f:
-        courselist = f.read()
+    gameFolders = []
+    gameFolders.append(ROOT_PH)
+    gameFolders.append(ROOT_ST)
+    for gameRoot in gameFolders:
 
-    courses = parseCourselist(courseinit, courselist)
+        courseInitPath = os.path.join(gameRoot, 'Course/courseinit.cib')
+        if os.path.isfile(courseInitPath):
+            with open(courseInitPath, 'rb') as f:
+                courseInit = f.read()
+        else:
+            courseInit = None
 
-    print(courses)
+        courseListPath1 = os.path.join(gameRoot, 'Map/courselist.clb')
+        courseListPath2 = os.path.join(gameRoot, 'Course/courselist.clb')
+        if os.path.isfile(courseListPath1):
+            with open(courseListPath1, 'rb') as f:
+                courseList = f.read()
+        else:
+            with open(courseListPath2, 'rb') as f:
+                courseList = f.read()
 
-    # for dir, folders, files in os.walk(ROOT_ST):
+        courses = parseCourselist(courseInit, courseList)
+
+        for courseName, courseFilename in courses:
+            courseFolder = os.path.join(gameRoot, 'Map', courseFilename)
+            if not os.path.isdir(courseFolder): continue
+
+            # Get stuff from course.bin
+            with open(os.path.join(courseFolder, 'course.bin'), 'rb') as f:
+                courseNarc = loadNarc(decompress_LZ10(f.read()))
+
+                # The zab is always the only file in the "arrange" folder
+                arrangeFolder = courseNarc['folders']['arrange']['files']
+                zab = arrangeFolder[next(iter(arrangeFolder))]
+
+                # Grab the zob files
+                motypeZob = courseNarc['folders']['objlist']['files']['motype.zob']
+                motype1Zob = courseNarc['folders']['objlist']['files']['motype_1.zob']
+                npctypeZob = courseNarc['folders']['objlist']['files']['npctype.zob']
+                npctype1Zob = courseNarc['folders']['objlist']['files']['npctype_1.zob']
+
+                # tex/mapModel.nsbtx only exists in Phantom Hourglass,
+                # and, even there, not in every course.bin
+                if 'mapModel.nsbtx' in courseNarc['folders']['tex']['files']:
+                    mapModel = courseNarc['folders']['tex']['files']['mapModel.nsbtx']
+                else:
+                    mapModel = None
+
+
+    # for dir, folders, files in os.walk(gameRoot):
     #     for file in files:
     #         full = os.path.join(dir, file)
     #         with open(full, 'rb') as f:
