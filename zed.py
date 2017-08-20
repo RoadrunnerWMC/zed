@@ -160,6 +160,11 @@ def parseCourselist(courseInit, courseList):
     return finalList
 
 
+def getOnlyItemFrom(dict):
+    key = next(iter(dict))
+    return key, dict[key]
+
+
 def main():
     gameFolders = []
     gameFolders.append(ROOT_PH)
@@ -190,39 +195,99 @@ def main():
 
             # Get stuff from course.bin
             with open(os.path.join(courseFolder, 'course.bin'), 'rb') as f:
-                courseNarc = loadNarc(decompress_LZ10(f.read()))
+                courseBin = f.read()
+            courseNarc = loadNarc(decompress_LZ10(courseBin))
 
-                # The zab is always the only file in the "arrange" folder
-                arrangeFolder = courseNarc['folders']['arrange']['files']
-                zab = arrangeFolder[next(iter(arrangeFolder))]
+            # The zab is always the only file in the "arrange" folder
+            _, zab = getOnlyItemFrom(courseNarc['folders']['arrange']['files'])
 
-                # Grab the zob files
-                motypeZob = courseNarc['folders']['objlist']['files']['motype.zob']
-                motype1Zob = courseNarc['folders']['objlist']['files']['motype_1.zob']
-                npctypeZob = courseNarc['folders']['objlist']['files']['npctype.zob']
-                npctype1Zob = courseNarc['folders']['objlist']['files']['npctype_1.zob']
+            # Grab the zob files
+            motypeZob = courseNarc['folders']['objlist']['files']['motype.zob']
+            motype1Zob = courseNarc['folders']['objlist']['files']['motype_1.zob']
+            npctypeZob = courseNarc['folders']['objlist']['files']['npctype.zob']
+            npctype1Zob = courseNarc['folders']['objlist']['files']['npctype_1.zob']
 
-                # tex/mapModel.nsbtx only exists in Phantom Hourglass,
-                # and, even there, not in every course.bin
-                if 'mapModel.nsbtx' in courseNarc['folders']['tex']['files']:
-                    mapModel = courseNarc['folders']['tex']['files']['mapModel.nsbtx']
+            # tex/mapModel.nsbtx only exists in Phantom Hourglass,
+            # and, even there, not in every course.bin
+            if 'mapModel.nsbtx' in courseNarc['folders']['tex']['files']:
+                mapModel = courseNarc['folders']['tex']['files']['mapModel.nsbtx']
+            else:
+                mapModel = None
+
+            # Load map**.bin's
+
+            for i in range(100):
+                mapBinFn = os.path.join(courseFolder, 'map%02d.bin' % i)
+                if not os.path.isfile(mapBinFn): continue
+                #print(mapBinFn)
+
+                with open(mapBinFn, 'rb') as f:
+                    mapBin = f.read()
+                mapNarc = loadNarc(decompress_LZ10(mapBin))
+
+                # SUBFOLDERS OF MAP.BIN
+                # mcb: PH: one optional {courseFilename}_{mapNumber}.mcb file
+                #      ST: empty folder
+                # nsbmd: PH: one optional {courseFilename}_{mapNumber}.nsbmd file
+                #        ST: one optional {courseFilename}_{mapNumber}.nsbmd file
+                #            OR
+                #            one optional {courseFilename}_{mapNumber}.nsbta file
+                # zbcd: PH: (no such folder)
+                #       ST: optional cam_**.zbcd files
+                # zcb: one required {courseFilename}_{mapNumber}.zcb file
+                # zmb: one required {courseFilename}_{mapNumber}.zmb file
+                # zob: PH: motype_{mapNumber}_0.zob,
+                #          motype_{mapNumber}_1.zob,
+                #          npctype_{mapNumber}_0.zob,
+                #          npctype_{mapNumber}_1.zob,
+                #      ST: Same as above, but it goes through _9
+                #          (for a total of 20 files)
+
+                # Load the optional MCB (Phantom Hourglass-only)
+                if mapNarc['folders']['mcb']['files']:
+                    _, mcbFile = getOnlyItemFrom(mapNarc['folders']['mcb']['files'])
                 else:
-                    mapModel = None
+                    mcbFile = None
 
+                # Load the model
+                # (can be nonexistent in either game)
+                # (can be a NSBTA instead of a NSBMD in Spirit Tracks)
+                model = None
+                isTA = False
+                if mapNarc['folders']['nsbmd']['files']:
+                    nsbmdFilename, model = getOnlyItemFrom(mapNarc['folders']['nsbmd']['files'])
+                    isTA = nsbmdFilename.endswith('.nsbta')
+                
+                # Load the camera files (Spirit Tracks-only)
+                cameraFiles = {}
+                if 'zbcd' in mapNarc['folders']:
+                    for camFilename, camFiledata in mapNarc['folders']['zbcd']['files'].items():
+                        cameraFiles[int(camFilename[-7:-5])] = camFiledata
+                
+                # Load the ZCB and ZMB files
+                _, zcbFile = getOnlyItemFrom(mapNarc['folders']['zcb']['files'])
+                _, zmbFile = getOnlyItemFrom(mapNarc['folders']['zmb']['files'])
 
-    # for dir, folders, files in os.walk(gameRoot):
-    #     for file in files:
-    #         full = os.path.join(dir, file)
-    #         with open(full, 'rb') as f:
-    #             fd = f.read()
-    #         if fd.startswith(b'\x10') and not file.endswith('ntfp'):
-    #             print(full + 'as LZ10')
-    #             fd = decompress_LZ10(fd)
-    #             print(fd.startswith(b'NARC'))
-    #         if fd.startswith(b'NARC'):
-    #             print(full + ' as narc')
-    #             narc = loadNarc(fd)
-    #             #print(narc)
+                # Load the ZOBs
+                moTypes = []
+                for i in range(10):
+                    for zobFile in mapNarc['folders']['zob']['files']:
+                        if zobFile.startswith('motype_') and zobFile.endswith(f'_{i}.zob'):
+                            break
+                    else:
+                        break
+                    moTypes.append(mapNarc['folders']['zob']['files'][zobFile])
+                npcTypes = []
+                for i in range(10):
+                    for zobFile in mapNarc['folders']['zob']['files']:
+                        if zobFile.startswith('npctype_') and zobFile.endswith(f'_{i}.zob'):
+                            break
+                    else:
+                        break
+                    npcTypes.append(mapNarc['folders']['zob']['files'][zobFile])
+                assert len(moTypes) in (2, 10)
+                assert len(npcTypes) in (2, 10)
+
 
 if __name__ == '__main__':
     main()
