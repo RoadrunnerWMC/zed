@@ -1,0 +1,21 @@
+Here is all I can say about ZCB Files (Zelda Collision):
+
+Phantom Hourglass and Spirit Tracks ZCB are differents.
+I already tried to import a map from ST into PH, model and textures worked great in-game but I fell through the floor. So I used the ZCB generator and same result meaning Gericom ZCB generator is only for ST.
+
+While a ZCB file is in a Hex Editor,
+0x0C mean the numbers of differents sections (04 for Phantom Hourglass, 05 for Spirit Tracks)
+
+List of sections:
+-BXTV
+-BLCP
+-BMRN (Spirit Tracks only)
+-BIRT
+-BDRG
+
+Another weird thing in Phantom Hourglass ZCB
+The BDRG section of every maps don't have the right size.
+
+Example:
+If I open dngn_flame_00.zcb (Fire Temple first floor) in a Hex Editor, I can see the total file size at 0x08 is DC5A. When I check with CTRL+A file size is only 6970.
+BDRG section is wrong, it say 57EC instead of 2280.

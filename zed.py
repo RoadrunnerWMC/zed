@@ -4,312 +4,157 @@
 # By RoadrunnerWMC
 # License: GNU GPL v3
 
+
 import os, os.path
 import struct
 
-import lz10
-import narc
+import ndspy.lz10
+import ndspy.narc
+import ndspy.rom
 
+import common
+import zab
+import zcb
+import zclb_zcib
+import zmb
+import zob
 
-ROOT_ST = '../RETAIL/st/root'
-ROOT_PH = '../RETAIL/ph/root'
 
+PH_ROM_IN = '../Testing/Zelda - Phantom Hourglass.nds'
+PH_ROM_OUT = '../Testing/Zelda - Phantom Hourglass - Testing.nds'
+ST_ROM_IN = '../Testing/Zelda - Spirit Tracks.nds'
+ST_ROM_OUT = '../Testing/Zelda - Spirit Tracks - Testing.nds'
 
-def parseCourselist(courseInit, courseList):
-    initExists = courseInit is not None
 
-    if initExists:
-        assert courseInit.startswith(b'ZCIB')
-    assert courseList.startswith(b'ZCLB')
+courseNames = {}
+if os.path.isfile('courses.txt'):
+    with open('courses.txt', 'r', encoding='utf-8') as f:
+        d = f.read()
+    for L in d.splitlines():
+        if not L: continue
+        courseNames[L.split(':')[0].strip()] = L.split(':')[1].strip()
 
-    finalList = []
 
-    if initExists:
-        zcibMagic, initUnk04, entriesCountInit1, entriesCountInit2 = struct.unpack_from('<4s3I', courseInit)
-    zclbMagic, listUnk04, entriesCount1, entriesCount2 = struct.unpack_from('<4s3I', courseList)
 
-    initOffset = listOffset = 0x10
-    for i in range(entriesCount1):
-        if initExists:
-            initEntryLength = struct.unpack_from('<I', courseInit, initOffset)[0]
-            entryName = courseInit[initOffset + 4 : initOffset + 0x14].rstrip(b'\0').decode('shift-jis')
-        else:
-            initEntryLength = 0
-            entryName = ''
-
-        listEntryLength = struct.unpack_from('<I', courseList, listOffset)[0]
-        entryFile = courseList[listOffset + 4 : listOffset + 0x14].rstrip(b'\0').decode('shift-jis')
-
-        finalList.append((entryName, entryFile))
-
-        initOffset += initEntryLength
-        listOffset += listEntryLength
-
-    return finalList
-
-
-def getOnlyItemFrom(dict):
-    key = next(iter(dict))
-    return key, dict[key]
-
-
-def parseZmb(zmb):
-    """
-    Parse a ZMB (Zelda Map Binary) file.
-    """
-    stuff = [] # FIXME: TESTING ONLY
-
-    magic, fileLen, version, unk10, unk14, unk18, unk1C = \
-        struct.unpack_from('<8s6I', zmb)
-    assert magic == b'MAPB'[::-1] + b'ZMB1'[::-1]
-    assert fileLen == len(zmb)
-    assert unk10 == unk14 == unk18 == unk1C == 0x01020304
-
-    # "version" is 9 in Phantom Hourglass and 11 in Spirit Tracks.
-    # It's probably actually "sectionCount", but this way, we can also
-    # use it to account for other differences between the games.
-
-    offset = 0x20
-
-    def sectionHeader(expectedMagic):
-        """
-        Helper function to read a standard section header and verify
-        that the magic is as expected.
-        """
-        magic, len, count, unk0A = struct.unpack_from('<4sIHh', zmb, offset)
-        assert magic == expectedMagic[::-1] # (reverse it because little-endian)
-        return len, count, unk0A
-
-
-    # LDLB section (version 11-only)
-    if version >= 11:
-        ldlbLen, ldlbCount, ldlbUnk0A = sectionHeader(b'LDLB')
-        assert ldlbUnk0A == -1
-        assert ldlbLen == 12 + 0x08 * ldlbCount
-
-        offset += ldlbLen
-
-    # ROMB section
-    rombLen, rombCount, rombUnk0A = sectionHeader(b'ROMB')
-    assert rombUnk0A in (0x00, 0x30)
-    assert rombLen == 12 + rombCount * 0xC0 # But it's more complicated than a simple table.
-
-    offset += rombLen
-
-    # ROOM section
-    roomLen, roomCount, roomUnk0A = sectionHeader(b'ROOM')
-    assert roomLen == 0x20
-    assert roomCount == 1
-    assert roomUnk0A == 0x0304
-
-    offset += roomLen
-
-    # ARAB section
-    arabLen, arabCount, arabUnk0A = sectionHeader(b'ARAB')
-    assert arabUnk0A == -1
-    assert arabLen == 12 + arabCount * (0x0C if version == 9 else 0x10)
-
-    for i in range(arabCount):
-        # Struct length is different depending on version.
-        if version == 9:
-            unk00, unk04, unk08 = \
-                struct.unpack_from('<3I', zmb, offset + 12 + 0x0C * i)
-        else:
-            unk00, unk04, unk08, unk0C = \
-                struct.unpack_from('<4I', zmb, offset + 12 + 0x10 * i)
-
-    offset += arabLen
-
-    # RALB section
-    ralbLen, ralbCount, ralbUnk0A = sectionHeader(b'RALB')
-    assert ralbUnk0A == -1
-
-    # Sadly, ralbCount seems to be a lie. Or something.
-
-    offset += ralbLen
-
-    # WARP section
-    warpLen, warpCount, warpUnk0A = sectionHeader(b'WARP')
-    assert warpUnk0A == -1
-    assert warpLen == 12 + 0x18 * warpCount
-
-    for i in range(warpCount):
-        unk00, destination, unk14 = \
-            struct.unpack_from('<I16sI', zmb, offset + 12 + 0x18 * i)
-        destination = destination.rstrip(b'\0').decode('ascii')
-        # unk14 seems to be multiple values.
-
-    offset += warpLen
-
-    # CAME section
-    cameLen, cameCount, cameUnk0A = sectionHeader(b'CAME')
-    assert cameUnk0A == -1
-    assert cameLen == 12 + 0x1C * cameCount
-
-    for i in range(cameCount):
-        unk00, unk04, unk08, unk0C, unk10, unk14, unk18 = \
-            struct.unpack_from('<7I', zmb, offset + 12 + 0x1C * i)
-
-    offset += cameLen
-
-    # CMPT section (version 11-only)
-    if version >= 11:
-        cmptLen, cmptCount, cmptUnk0A = sectionHeader(b'CMPT')
-        assert cmptUnk0A == -1
-        assert cmptLen == 12 + 0x10 * cmptCount
-
-        for i in range(cmptCount):
-            unk00, unk04, unk08, unk0C = \
-                struct.unpack_from('<4I', zmb, offset + 12 + 0x10 * i)
-
-        offset += cmptLen
-
-    # PLYR section
-    plyrLen, plyrCount, plyrUnk0A = sectionHeader(b'PLYR')
-    assert plyrUnk0A == 0x0304
-    assert plyrLen == 12 + plyrCount * (0x10 if version == 9 else 0x14)
-
-    offset += plyrLen
-
-    # MPOB section ("map objects")
-    mpobLen, mpobCount, mpobUnk0A = sectionHeader(b'MPOB')
-    assert mpobUnk0A == -1
-    assert mpobLen == 12 + 0x1C * mpobCount
-
-    for i in range(mpobCount):
-        objType, x, y, unk06, unk08, unk0C, unk10, unk14, unk18 = \
-            struct.unpack_from('<4sBBH5I', zmb, offset + 12 + 0x1C * i)
-        if version == 9:
-            objType, = struct.unpack_from('<I', objType)
-            objType = f'({objType})'
-        else:
-            objType = objType[::-1].decode('ascii')
-
-        stuff.append((False, objType, x << 4, y << 4))
-
-    offset += mpobLen
-
-    # NPCA section (actors)
-    npcaLen, npcaCount, npcaUnk0A = sectionHeader(b'NPCA')
-    assert npcaUnk0A == -1
-    assert npcaLen == 12 + 0x20 * npcaCount
-
-    for i in range(npcaCount):
-        actorID, x, y, zPos, rot, unk0C, unk10, unk14, unk18, unk1C = \
-            struct.unpack_from('<4s4h5I', zmb, offset + 12 + 0x20 * i)
-        actorID = actorID[::-1].decode('ascii')
-
-        # unk18 is related to dialogue/script
-        # unk1C can make actors disappear
-
-        stuff.append((True, actorID, x, y))
-
-
-    IMGW, IMGH = 1024, 1024
-    IMGW += 80; IMGH += 80
-    import PIL.Image, PIL.ImageDraw, PIL.ImageFont
-    image = PIL.Image.new('RGBA', (IMGW, IMGH), (0,0,0,0))
-    draw = PIL.ImageDraw.Draw(image)
-    font = PIL.ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 10)
-
-    wantPrint = False
-
-    if stuff:
-        minX = minY = 0xFFFF
-        maxX = maxY = 0
-        for isActor, name, xPos, yPos in stuff:
-            if xPos < minX: minX = xPos
-            if yPos < minY: minY = yPos
-            if xPos > maxX: maxX = xPos
-            if yPos > maxY: maxY = yPos
-        maxX += 1; maxY += 1
-
-        canvasX = minX
-        canvasY = minY
-        canvasW = canvasH = max(maxX - canvasX, maxY - canvasY)
-
-        def canvasPos(x, y):
-            return (1024 * (x - canvasX) / canvasW,
-                    1024 * (y - canvasY) / canvasH)
-
-        draw.text(canvasPos(minX, minY), f'({minX}, {minY})', (0,255,0,255), font=font)
-        draw.text(canvasPos(maxX, minY), f'({maxX}, {minY})', (0,255,0,255), font=font)
-        draw.text(canvasPos(minX, maxY), f'({minX}, {maxY})', (0,255,0,255), font=font)
-        draw.text(canvasPos(maxX, maxY), f'({maxX}, {maxY})', (0,255,0,255), font=font)
-
-        for isActor, name, xPos, yPos in stuff:
-            assert (xPos >> 4) <= 256
-            assert (yPos >> 4) <= 256
-            color = (0,0,0,255) if isActor else (255,0,0,255)
-
-            x, y = canvasPos(xPos, yPos)
-
-            draw.text((x, y), name, color, font=font)
-            # if (xPos >> 4) >= 245 or (yPos >> 4) >= 245:
-            #     wantPrint = True
-
-
-    return image, wantPrint
 
 
 def main():
-    gameFolders = []
-    gameFolders.append(ROOT_PH)
-    gameFolders.append(ROOT_ST)
-    for gameRoot in gameFolders:
 
-        courseInitPath = os.path.join(gameRoot, 'Course/courseinit.cib')
-        if os.path.isfile(courseInitPath):
-            with open(courseInitPath, 'rb') as f:
-                courseInit = f.read()
+    gameRomFilenames = []
+    #gameRomFilenames.append((common.Game.PhantomHourglass, PH_ROM_IN, PH_ROM_OUT))
+    gameRomFilenames.append((common.Game.SpiritTracks,     ST_ROM_IN, ST_ROM_OUT))
+    for game, romIn, romOut in gameRomFilenames:
+        with open(romIn, 'rb') as f:
+            romData = f.read()
+        rom = ndspy.rom.NintendoDSRom(romData)
+
+        if 'Course/courseinit.cib' in rom.filenames:
+            courseInit = rom.files[rom.filenames['Course/courseinit.cib']]
         else:
             courseInit = None
 
-        courseListPath1 = os.path.join(gameRoot, 'Map/courselist.clb')
-        courseListPath2 = os.path.join(gameRoot, 'Course/courselist.clb')
-        if os.path.isfile(courseListPath1):
-            with open(courseListPath1, 'rb') as f:
-                courseList = f.read()
+        if 'Map/courselist.clb' in rom.filenames:
+            courseList = rom.files[rom.filenames['Map/courselist.clb']]
+        elif 'Course/courselist.clb' in rom.filenames:
+            courseList = rom.files[rom.filenames['Course/courselist.clb']]
         else:
-            with open(courseListPath2, 'rb') as f:
-                courseList = f.read()
+            raise RuntimeError('Are you sure this is a Zelda rom?')
 
-        courses = parseCourselist(courseInit, courseList)
+        courseEntries = zclb_zcib.loadCourseListAndInit(game, courseList, courseInit)
 
-        for courseName, courseFilename in courses:
-            courseFolder = os.path.join(gameRoot, 'Map', courseFilename)
-            if not os.path.isdir(courseFolder): continue
+
+        # assert courseList == courseListNew
+        # assert courseInit == courseInitNew
+
+        # printed = set()
+        # for name in rom.filenames['Npc'].files:
+        #     # print(name)
+        #     # continue
+        #     if name == 'Tex.bin':
+        #         print('Tex.bin  (??)')
+        #         continue
+        #     spl = name.split('.')[0]
+        #     if spl in printed: continue
+        #     printed.add(spl)
+
+        #     allLikeThis = []
+        #     for name2 in rom.filenames['Npc'].files:
+        #         if name2.split('.')[0] == spl:
+        #             allLikeThis.append('.' + name2.split('.')[-1])
+        #     allLikeThis.sort()
+
+        #     while len(spl) < 20:
+        #         spl += ' '
+        #     print(spl + f' ({", ".join(allLikeThis)})')
+
+        # temp = set()
+        # for name in rom.filenames['MapObj'].files:
+        #     temp.add(name.split('.')[0])
+        #     continue
+        #     if not name.endswith('.bin'): continue
+        #     print(name)
+        #     try:
+        #         os.makedirs('/home/user/zed/Testing/stEvent/' + name)
+        #     except FileExistsError: pass
+
+        #     f = rom.files[rom.filenames['Event/' + name]]
+        #     narcNames, narcFiles = ndspy.narc.load(ndspy.lz10.decompress(f))
+
+        #     for f in narcNames.folders:
+        #         os.makedirs('/home/user/zed/Testing/stEvent/' + name + '/' + f)
+        #         for f2 in narcNames[f].files:
+        #             with open('/home/user/zed/Testing/stEvent/' + name + '/' + f + '/' + f2, 'wb') as f3:
+        #                 f3.write(narcFiles[narcNames[f + '/' + f2]])
+        #         #print(narcNames[f].folders)
+        #         #print(narcNames[f].files)
+        #     print(narcNames.files)
+        #     #raise
+
+        # print(temp)
+
+        # raise
+
+        for entry in courseEntries:
+            courseFilename = entry.name
+            courseName = entry.title
+
+            courseFolderName = 'Map/' + courseFilename
+            if courseFolderName not in rom.filenames: continue
+            courseFolder = rom.filenames[courseFolderName]
 
             # Get stuff from course.bin
-            with open(os.path.join(courseFolder, 'course.bin'), 'rb') as f:
-                courseBin = f.read()
-            courseNarc = narc.load(lz10.decompress(courseBin))
+            courseBin = rom.files[courseFolder['course.bin']]
+            courseNarcNames, courseNarcFiles = \
+                ndspy.narc.load(ndspy.lz10.decompress(courseBin))
+            resaveCourse = False
 
             # The zab is always the only file in the "arrange" folder
-            _, zab = getOnlyItemFrom(courseNarc['folders']['arrange']['files'])
+            zabFile = courseNarcFiles[courseNarcNames['arrange'].firstID]
+            zabObj = zab.ZAB(game, zabFile)
 
             # Grab the zob files
-            motypeZob = courseNarc['folders']['objlist']['files']['motype.zob']
-            motype1Zob = courseNarc['folders']['objlist']['files']['motype_1.zob']
-            npctypeZob = courseNarc['folders']['objlist']['files']['npctype.zob']
-            npctype1Zob = courseNarc['folders']['objlist']['files']['npctype_1.zob']
+            motypeZob = zob.ZOB(game, courseNarcFiles[courseNarcNames['objlist/motype.zob']])
+            motype1Zob = zob.ZOB(game, courseNarcFiles[courseNarcNames['objlist/motype_1.zob']])
+            npctypeZob = zob.ZOB(game, courseNarcFiles[courseNarcNames['objlist/npctype.zob']])
+            npctype1Zob = zob.ZOB(game, courseNarcFiles[courseNarcNames['objlist/npctype_1.zob']])
 
             # tex/mapModel.nsbtx only exists in Phantom Hourglass,
             # and, even there, not in every course.bin
-            if 'mapModel.nsbtx' in courseNarc['folders']['tex']['files']:
-                mapModel = courseNarc['folders']['tex']['files']['mapModel.nsbtx']
-            else:
+            mapModelID = courseNarcNames['tex/mapModel.nsbtx']
+            if mapModelID is None:
                 mapModel = None
+            else:
+                mapModel = courseNarcFiles[mapModelID]
 
             # Load map**.bin's
 
             for mapNumber in range(100):
-                mapBinFn = os.path.join(courseFolder, 'map%02d.bin' % mapNumber)
-                if not os.path.isfile(mapBinFn): continue
+                mapBinFn = 'map%02d.bin' % mapNumber
+                if mapBinFn not in courseFolder: continue
 
-                with open(mapBinFn, 'rb') as f:
-                    mapBin = f.read()
-                mapNarc = narc.load(lz10.decompress(mapBin))
+                mapBin = rom.files[courseFolder[mapBinFn]]
+                mapNarcNames, mapNarcFiles = \
+                    ndspy.narc.load(ndspy.lz10.decompress(mapBin))
 
                 # SUBFOLDERS OF MAP.BIN
                 # mcb: PH: one optional {courseFilename}_{mapNumber}.mcb file
@@ -330,8 +175,9 @@ def main():
                 #          (for a total of 20 files)
 
                 # Load the optional MCB (Phantom Hourglass-only)
-                if mapNarc['folders']['mcb']['files']:
-                    _, mcbFile = getOnlyItemFrom(mapNarc['folders']['mcb']['files'])
+                mcbFolder = mapNarcNames['mcb']
+                if mcbFolder.files:
+                    mcbFile = mapNarcFiles[mcbFolder.firstID]
                 else:
                     mcbFile = None
 
@@ -340,43 +186,98 @@ def main():
                 # (can be a NSBTA instead of a NSBMD in Spirit Tracks)
                 model = None
                 isTA = False
-                if mapNarc['folders']['nsbmd']['files']:
-                    nsbmdFilename, model = getOnlyItemFrom(mapNarc['folders']['nsbmd']['files'])
-                    isTA = nsbmdFilename.endswith('.nsbta')
+                nsbmdFolder = mapNarcNames['nsbmd']
+                if nsbmdFolder.files:
+                    model = mapNarcFiles[nsbmdFolder.firstID]
+                    isTA = nsbmdFolder.files[0].endswith('.nsbta')
                 
                 # Load the camera files (Spirit Tracks-only)
                 cameraFiles = {}
-                if 'zbcd' in mapNarc['folders']:
-                    for camFilename, camFiledata in mapNarc['folders']['zbcd']['files'].items():
-                        cameraFiles[int(camFilename[-7:-5])] = camFiledata
+                if 'zbcd' in mapNarcNames:
+                    zbcdFolder = mapNarcNames['zbcd']
+                    for camFileNum, camFilename in enumerate(zbcdFolder.files):
+                        cameraFiles[int(camFilename[-7:-5])] = \
+                            mapNarcFiles[zbcdFolder.firstID + camFileNum]
                 
                 # Load the ZCB and ZMB files
-                _, zcbFile = getOnlyItemFrom(mapNarc['folders']['zcb']['files'])
-                _, zmbFile = getOnlyItemFrom(mapNarc['folders']['zmb']['files'])
+                #if courseFilename not in ['f_first', 'f_htown', 'd_main', 'e3_dungeon']: continue
+                zcbFile = mapNarcFiles[mapNarcNames['zcb'].firstID]
+                zmbFile = mapNarcFiles[mapNarcNames['zmb'].firstID]
+                #print(f'{courseFilename}/%02d' % mapNumber)
+                map = zmb.ZMB(game, zmbFile)
+                if map.CAME:
+                    print(f'{len(map.CAME)}: {courseFilename}/%02d' % mapNumber)
+                collisions = zcb.ZCB(game, zcbFile)
+                # if map.CMPT:
+                #     ...
 
                 # Load the ZOBs
                 moTypes = []
                 for zobNum in range(10):
-                    for zobFile in mapNarc['folders']['zob']['files']:
+                    for zobFile in mapNarcNames['zob'].files:
                         if zobFile.startswith('motype_') and zobFile.endswith(f'_{zobNum}.zob'):
                             break
                     else:
                         break
-                    moTypes.append(mapNarc['folders']['zob']['files'][zobFile])
+                    moTypes.append(zob.ZOB(game, mapNarcFiles[mapNarcNames.idOf('zob/' + zobFile)]))
                 npcTypes = []
                 for zobNum in range(10):
-                    for zobFile in mapNarc['folders']['zob']['files']:
+                    for zobFile in mapNarcNames['zob'].files:
                         if zobFile.startswith('npctype_') and zobFile.endswith(f'_{zobNum}.zob'):
                             break
                     else:
                         break
-                    npcTypes.append(mapNarc['folders']['zob']['files'][zobFile])
-                assert len(moTypes) in (2, 10)
-                assert len(npcTypes) in (2, 10)
+                    npcTypes.append(zob.ZOB(game, mapNarcFiles[mapNarcNames.idOf('zob/' + zobFile)]))
 
-                courseImg, printName = parseZmb(zmbFile)
-                courseImg.save(f'courses/{courseFilename}_%02d.png' % mapNumber)
-                if printName: print(courseFilename)
+                if game == common.Game.PhantomHourglass:
+                    assert len(moTypes) == 2
+                    assert len(npcTypes) == 2
+                else:
+                    assert len(moTypes) == 10
+                    assert len(npcTypes) == 10
+
+
+                # # TESTING
+                # sortedActorsList = [n.type for n in map.actors]
+                # for q, z in enumerate(npcTypes):
+                #     indexArray = [sortedActorsList.index(e) for e in z.entries]
+                #     print(indexArray)
+                #     assert indexArray == sorted(indexArray)
+                #     print(z.entries)
+                # print(sortedActorsList)
+                # print()
+
+
+                zmbFile2 = map.save(game)
+                resaveMap = (zmbFile != zmbFile2)
+                assert not resaveMap
+                #map.renderPNG().save(f'courses/{courseFilename}_%02d.png' % mapNumber)
+
+                if resaveMap:
+                    mapNarcFiles[mapNarcFiles.index(zmbFile)] = zmbFile2
+
+                    newMapBin = ndspy.lz10.compress(ndspy.narc.save(mapNarcNames, mapNarcFiles))
+                    rom.files[courseFolder[mapBinFn]] = newMapBin
+
+
+            if resaveCourse:
+                newCourseBin = ndspy.lz10.compress(ndspy.narc.save(courseNarcNames, courseNarcFiles))
+                rom.files[courseFolder['course.bin']] = newCourseBin
+
+
+        # Resave courselist/courseinit
+        courseListNew, courseInitNew = zclb_zcib.saveCourseListAndInit(game, courseEntries)
+        if 'Course/courseinit.cib' in rom.filenames:
+            rom.files[rom.filenames['Course/courseinit.cib']] = courseInitNew
+        if 'Map/courselist.clb' in rom.filenames:
+            rom.files[rom.filenames['Map/courselist.clb']] = courseListNew
+        elif 'Course/courselist.clb' in rom.filenames:
+            rom.files[rom.filenames['Course/courselist.clb']] = courseListNew
+
+
+        romDataOut = rom.save()
+        with open(romOut, 'wb') as f:
+            f.write(romDataOut)
 
 
 if __name__ == '__main__':
