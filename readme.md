@@ -4,6 +4,8 @@ An unfinished library and toolset by me, for files from _The Legend of Zelda: Ph
 
 This repo is archived because I have no plans to finish or otherwise maintain this project. I'm posting it "as-is" because it could be useful to people, even if only as documentation.
 
+**Important note:** the PNGs in the "script_graphs" folder are _huge_ (some larger than 10000x10000) and can easily crash your browser or other applications. They're very cool, but be cautious when opening them due to their size.
+
 License is GNU GPL v3; see the LICENSE file for more information.
 
 -- RoadrunnerWMC, December 12 2021
